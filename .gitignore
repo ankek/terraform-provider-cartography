@@ -1,11 +1,15 @@
 # Local .terraform directories
 .terraform/
+.claude/
+broken/
 
 # .tfstate files
 *.tfstate
 *.tfstate.*
 
 # Crash log files
+all.md
+p.txt
 crash.log
 crash.*.log
 
@@ -35,3 +39,43 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+terraform-provider-cartography
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Generated diagram files
+*.png
+*.svg
+diagrams/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs/
