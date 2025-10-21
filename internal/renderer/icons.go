@@ -105,14 +105,23 @@ var digitaloceanIconMap = map[string]string{
 	"digitalocean_monitor_alert":        "icons/generic/monitoring.svg",
 }
 
-// GCP icon mappings (placeholder)
+// GCP icon mappings (using actual downloaded files)
 var gcpIconMap = map[string]string{
-	"google_compute_network":        "icons/gcp/vpc.svg",
-	"google_compute_subnetwork":     "icons/gcp/vpc.svg",
-	"google_compute_firewall":       "icons/gcp/firewall.svg",
-	"google_compute_instance":       "icons/gcp/compute-engine.svg",
-	"google_compute_forwarding_rule": "icons/gcp/load-balancing.svg",
-	"google_storage_bucket":         "icons/gcp/cloud-storage.svg",
+	"google_compute_network":         "icons/gcp/Networking/SVG/Networking-512-color-rgb.svg",
+	"google_compute_subnetwork":      "icons/gcp/Networking/SVG/Networking-512-color-rgb.svg",
+	"google_compute_firewall":        "icons/gcp/Security Identity/SVG/SecurityIdentity-512-color.svg",
+	"google_compute_instance":        "icons/gcp/Compute Engine/SVG/ComputeEngine-512-color-rgb.svg",
+	"google_compute_forwarding_rule": "icons/gcp/Networking/SVG/Networking-512-color-rgb.svg",
+	"google_storage_bucket":          "icons/gcp/Cloud Storage/SVG/Cloud_Storage-512-color.svg",
+	"google_container_cluster":       "icons/gcp/GKE/SVG/GKE-512-color.svg",
+	"google_sql_database_instance":   "icons/gcp/Cloud SQL/SVG/CloudSQL-512-color.svg",
+	// Security & Certificates (using generic icons for consistency)
+	"google_compute_ssl_certificate":     "icons/generic/tls-certificate.svg",
+	"google_kms_crypto_key":              "icons/generic/private-key.svg",
+	"google_kms_key_ring":                "icons/generic/security.svg",
+	"google_secret_manager_secret":       "icons/generic/private-key.svg",
+	"google_container_registry":          "icons/generic/container.svg",
+	"google_artifact_registry_repository": "icons/generic/container.svg",
 }
 
 // getIconPath returns the path to the icon for a given provider and resource type
