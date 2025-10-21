@@ -79,3 +79,5 @@ Thumbs.db
 
 # Documentation
 docs/
+# Added by goreleaser init:
+dist/
