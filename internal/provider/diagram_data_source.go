@@ -64,7 +64,7 @@ func (d *DiagramDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 				Required:            true,
 			},
 			"format": schema.StringAttribute{
-				MarkdownDescription: "Output format: 'png' or 'svg'. Default is 'png'.",
+				MarkdownDescription: "Output format: 'svg', 'png', 'jpg', or 'jpeg'. Default is 'svg'. Note: PNG and JPEG export requires resvg, inkscape, or imagemagick to be installed for high quality output.",
 				Optional:            true,
 			},
 			"direction": schema.StringAttribute{
@@ -103,7 +103,7 @@ func (d *DiagramDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	}
 
 	// Set defaults
-	format := "png"
+	format := "svg"
 	if !data.Format.IsNull() && data.Format.ValueString() != "" {
 		format = data.Format.ValueString()
 	}
