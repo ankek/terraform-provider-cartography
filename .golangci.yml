@@ -1,0 +1,121 @@
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+
+  govet:
+    enable-all: true
+    disable:
+      - shadow
+
+  gocyclo:
+    min-complexity: 15
+
+  dupl:
+    threshold: 100
+
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+
+  misspell:
+    locale: US
+
+  lll:
+    line-length: 140
+
+  goimports:
+    local-prefixes: github.com/ankek/terraform-provider-cartography
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      - dupImport
+      - ifElseChain
+      - octalLiteral
+      - whyNoLint
+      - wrapperFunc
+
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - checkPrivateReceivers
+          - sayRepetitiveInsteadOfStutters
+      - name: package-comments
+      - name: var-naming
+      - name: indent-error-flow
+      - name: error-return
+      - name: error-naming
+      - name: errorf
+      - name: error-strings
+      - name: receiver-naming
+      - name: increment-decrement
+      - name: var-declaration
+      - name: range-val-in-closure
+      - name: range-val-address
+      - name: context-as-argument
+      - name: context-keys-type
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck        # Checks for unchecked errors
+    - gosimple        # Simplify code
+    - govet           # Reports suspicious constructs
+    - ineffassign     # Detects ineffectual assignments
+    - staticcheck     # Advanced static analysis
+    - typecheck       # Type-checks Go code
+    - unused          # Checks for unused code
+    - gocyclo         # Checks cyclomatic complexity
+    - gofmt           # Checks formatting
+    - goimports       # Checks import formatting
+    - misspell        # Finds commonly misspelled words
+    - goconst         # Finds repeated strings that could be constants
+    - gocritic        # Comprehensive Go linter
+    - revive          # Fast, configurable, extensible linter
+    - unconvert       # Remove unnecessary type conversions
+    - unparam         # Reports unused function parameters
+    - gosec           # Security-focused linter
+
+issues:
+  exclude-use-default: false
+  exclude-rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+
+    # Exclude known linters from partially hard-vendored code
+    - path: internal/renderer/
+      text: "Use of weak random number generator"
+
+    # Exclude specific staticcheck messages
+    - linters:
+        - staticcheck
+      text: "SA1019:" # Ignore deprecation warnings for now
+
+    # Maximum issues count per one linter
+  max-issues-per-linter: 0
+
+  # Maximum count of issues with the same text
+  max-same-issues: 0
+
+  # Show only new issues created after this git revision
+  new: false
+
+  # Fix found issues (if it's supported by the linter)
+  fix: false

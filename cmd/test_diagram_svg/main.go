@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/ankek/terraform-provider-cartography/internal/graph"
 	"github.com/ankek/terraform-provider-cartography/internal/parser"
@@ -79,7 +80,8 @@ func main() {
 	}
 
 	fmt.Println("\nRendering diagram with icons enabled (SVG output)...")
-	err := renderer.RenderDiagram(g, "broken/infrastructure_test.svg", opts)
+	ctx := context.Background()
+	err := renderer.RenderDiagram(ctx, g, "broken/infrastructure_test.svg", opts)
 
 	if err != nil {
 		fmt.Printf("❌ FAIL: %v\n", err)

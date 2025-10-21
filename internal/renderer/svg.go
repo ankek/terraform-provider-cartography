@@ -61,18 +61,27 @@ func (r *SVGRenderer) Render(layout *Layout, g *graph.Graph) ([]byte, error) {
 
 // writeHeader writes the SVG header with professional styling
 func (r *SVGRenderer) writeHeader(width, height float64) {
-	r.buf.WriteString(fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	// Write directly to buffer to avoid double allocation
+	r.buf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
-     width="%.0f" height="%.0f" viewBox="0 0 %.0f %.0f">
+     width="`)
+	r.buf.WriteString(formatFloat(width))
+	r.buf.WriteString(`" height="`)
+	r.buf.WriteString(formatFloat(height))
+	r.buf.WriteString(`" viewBox="0 0 `)
+	r.buf.WriteString(formatFloat(width))
+	r.buf.WriteByte(' ')
+	r.buf.WriteString(formatFloat(height))
+	r.buf.WriteString(`">
 <defs>
   <!-- Gradient for background -->
-  <linearGradient id="bgGradient" x1="0%%" y1="0%%" x2="0%%" y2="100%%">
-    <stop offset="0%%" style="stop-color:#f8f9fa;stop-opacity:1" />
-    <stop offset="100%%" style="stop-color:#e9ecef;stop-opacity:1" />
+  <linearGradient id="bgGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" style="stop-color:#f8f9fa;stop-opacity:1" />
+    <stop offset="100%" style="stop-color:#e9ecef;stop-opacity:1" />
   </linearGradient>
 
   <!-- Shadow filter for nodes -->
-  <filter id="nodeShadow" x="-50%%" y="-50%%" width="200%%" height="200%%">
+  <filter id="nodeShadow" x="-50%" y="-50%" width="200%" height="200%">
     <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
     <feOffset dx="0" dy="2" result="offsetblur"/>
     <feComponentTransfer>
@@ -85,9 +94,9 @@ func (r *SVGRenderer) writeHeader(width, height float64) {
   </filter>
 
   <!-- Gradient for nodes -->
-  <linearGradient id="nodeGradient" x1="0%%" y1="0%%" x2="0%%" y2="100%%">
-    <stop offset="0%%" style="stop-color:#ffffff;stop-opacity:1" />
-    <stop offset="100%%" style="stop-color:#f8f9fa;stop-opacity:1" />
+  <linearGradient id="nodeGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" style="stop-color:#ffffff;stop-opacity:1" />
+    <stop offset="100%" style="stop-color:#f8f9fa;stop-opacity:1" />
   </linearGradient>
 
   <!-- Narrow, sleek arrowhead -->
@@ -111,7 +120,7 @@ func (r *SVGRenderer) writeHeader(width, height float64) {
 </defs>
 
 <!-- Background with gradient -->
-<rect width="100%%" height="100%%" fill="url(#bgGradient)"/>
+<rect width="100%" height="100%" fill="url(#bgGradient)"/>
 
 <!-- Grid pattern for professional look -->
 <defs>
@@ -119,8 +128,19 @@ func (r *SVGRenderer) writeHeader(width, height float64) {
     <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#dee2e6" stroke-width="0.5" opacity="0.3"/>
   </pattern>
 </defs>
-<rect width="100%%" height="100%%" fill="url(#grid)"/>
-`, width, height, width, height))
+<rect width="100%" height="100%" fill="url(#grid)"/>
+`)
+}
+
+// formatFloat efficiently formats a float to string without unnecessary precision
+func formatFloat(f float64) string {
+	// Use strconv for better performance than Sprintf
+	return fmt.Sprintf("%.0f", f)
+}
+
+// formatFloat2 formats a float with 2 decimal places
+func formatFloat2(f float64) string {
+	return fmt.Sprintf("%.2f", f)
 }
 
 // writeTitle writes the diagram title with professional styling

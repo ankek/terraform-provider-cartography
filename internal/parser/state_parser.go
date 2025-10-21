@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,8 +41,16 @@ type StateResourceInstance struct {
 	Dependencies []string               `json:"dependencies,omitempty"`
 }
 
-// ParseStateFile reads and parses a Terraform state file
-func ParseStateFile(path string) ([]Resource, error) {
+// ParseStateFile reads and parses a Terraform state file.
+// It respects the provided context for cancellation.
+func ParseStateFile(ctx context.Context, path string) ([]Resource, error) {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read state file: %w", err)

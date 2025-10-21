@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ankek/terraform-provider-cartography/internal/graph"
-	"github.com/ankek/terraform-provider-cartography/internal/parser"
-	"github.com/ankek/terraform-provider-cartography/internal/renderer"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -20,12 +17,16 @@ import (
 var _ resource.Resource = &DiagramResource{}
 var _ resource.ResourceWithImportState = &DiagramResource{}
 
-func NewDiagramResource() resource.Resource {
-	return &DiagramResource{}
-}
-
 // DiagramResource defines the resource implementation.
 type DiagramResource struct {
+	generator *DiagramGenerator
+}
+
+// NewDiagramResource creates a new diagram resource with a generator
+func NewDiagramResource() resource.Resource {
+	return &DiagramResource{
+		generator: &DiagramGenerator{},
+	}
 }
 
 // DiagramResourceModel describes the resource data model.
@@ -118,47 +119,24 @@ func (r *DiagramResource) Create(ctx context.Context, req resource.CreateRequest
 		data.UseIcons = types.BoolValue(false)
 	}
 
-	// Parse Terraform state or config
-	var resources []parser.Resource
-	var err error
-
-	if !data.StatePath.IsNull() && data.StatePath.ValueString() != "" {
-		resources, err = parser.ParseStateFile(data.StatePath.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to parse state file", err.Error())
-			return
-		}
-	} else if !data.ConfigPath.IsNull() && data.ConfigPath.ValueString() != "" {
-		resources, err = parser.ParseConfigDirectory(data.ConfigPath.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to parse config directory", err.Error())
-			return
-		}
-	} else {
-		resp.Diagnostics.AddError("Missing input", "Either state_path or config_path must be provided")
-		return
-	}
-
-	// Build resource graph
-	resourceGraph := graph.BuildGraph(resources)
-
-	// Render diagram
-	renderOpts := renderer.RenderOptions{
+	// Use the generator to create the diagram
+	result, err := r.generator.Generate(ctx, DiagramConfig{
+		StatePath:     data.StatePath.ValueString(),
+		ConfigPath:    data.ConfigPath.ValueString(),
+		OutputPath:    data.OutputPath.ValueString(),
 		Format:        data.Format.ValueString(),
 		Direction:     data.Direction.ValueString(),
 		IncludeLabels: data.IncludeLabels.ValueBool(),
 		Title:         data.Title.ValueString(),
 		UseIcons:      data.UseIcons.ValueBool(),
-	}
-
-	err = renderer.RenderDiagram(resourceGraph, data.OutputPath.ValueString(), renderOpts)
+	})
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to render diagram", err.Error())
+		resp.Diagnostics.AddError("Failed to generate diagram", err.Error())
 		return
 	}
 
-	// Generate ID
-	data.ID = types.StringValue(fmt.Sprintf("%s_%s", data.OutputPath.ValueString(), data.Format.ValueString()))
+	// Generate ID from output path and format
+	data.ID = types.StringValue(fmt.Sprintf("%s_%s", result.OutputPath, data.Format.ValueString()))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -188,8 +166,42 @@ func (r *DiagramResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	// Re-create the diagram with updated configuration
-	r.Create(ctx, resource.CreateRequest{Plan: req.Plan}, (*resource.CreateResponse)(resp))
+	// Set defaults
+	if data.Format.IsNull() {
+		data.Format = types.StringValue("png")
+	}
+	if data.Direction.IsNull() {
+		data.Direction = types.StringValue("TB")
+	}
+	if data.IncludeLabels.IsNull() {
+		data.IncludeLabels = types.BoolValue(true)
+	}
+	if data.UseIcons.IsNull() {
+		data.UseIcons = types.BoolValue(false)
+	}
+
+	// Use the generator to update the diagram
+	result, err := r.generator.Generate(ctx, DiagramConfig{
+		StatePath:     data.StatePath.ValueString(),
+		ConfigPath:    data.ConfigPath.ValueString(),
+		OutputPath:    data.OutputPath.ValueString(),
+		Format:        data.Format.ValueString(),
+		Direction:     data.Direction.ValueString(),
+		IncludeLabels: data.IncludeLabels.ValueBool(),
+		Title:         data.Title.ValueString(),
+		UseIcons:      data.UseIcons.ValueBool(),
+	})
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to generate diagram", err.Error())
+		return
+	}
+
+	// Preserve or generate ID
+	if data.ID.IsNull() {
+		data.ID = types.StringValue(fmt.Sprintf("%s_%s", result.OutputPath, data.Format.ValueString()))
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *DiagramResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

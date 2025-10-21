@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,8 +13,16 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// ParseConfigDirectory reads and parses all .tf files in a directory
-func ParseConfigDirectory(dirPath string) ([]Resource, error) {
+// ParseConfigDirectory reads and parses all .tf files in a directory.
+// It respects the provided context for cancellation.
+func ParseConfigDirectory(ctx context.Context, dirPath string) ([]Resource, error) {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	parser := hclparse.NewParser()
 
 	// Find all .tf files

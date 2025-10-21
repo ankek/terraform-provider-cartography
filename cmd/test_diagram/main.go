@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/ankek/terraform-provider-cartography/internal/graph"
 	"github.com/ankek/terraform-provider-cartography/internal/parser"
@@ -82,7 +83,7 @@ func main() {
 
 	// Test rendering with icons
 	opts := renderer.RenderOptions{
-		Format:        "png",
+		Format:        "svg",
 		Direction:     "TB",
 		IncludeLabels: true,
 		Title:         "My Infrastructure",
@@ -90,7 +91,8 @@ func main() {
 	}
 
 	fmt.Println("Rendering diagram with icons enabled...")
-	err := renderer.RenderDiagram(g, "broken/infrastructure.png", opts)
+	ctx := context.Background()
+	err := renderer.RenderDiagram(ctx, g, "broken/infrastructure.svg", opts)
 
 	if err != nil {
 		fmt.Printf("❌ FAIL: %v\n", err)
@@ -98,6 +100,6 @@ func main() {
 	}
 
 	fmt.Println("✅ SUCCESS: Diagram rendered with icons!")
-	fmt.Println("\nOutput: broken/infrastructure.png")
-	fmt.Println("\nCheck the diagram - you should see icons instead of colored boxes!")
+	fmt.Println("\nOutput: broken/infrastructure.svg")
+	fmt.Println("\nOpen the SVG in your browser to see the beautiful diagram!")
 }

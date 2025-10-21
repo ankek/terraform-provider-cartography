@@ -179,13 +179,45 @@ func fetchS3State(ctx context.Context, config *RemoteStateConfig) ([]byte, error
 		secretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
 	}
 
-	if accessKey == "" || secretKey == "" {
-		return nil, fmt.Errorf("AWS credentials not found. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
+	// Try fetching with anonymous access (for public buckets)
+	s3URL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucket, region, key)
+
+	client := retryablehttp.NewClient()
+	client.RetryMax = 3
+	client.Logger = nil
+
+	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", s3URL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create S3 request: %w", err)
 	}
 
-	// Note: This is a simplified implementation
-	// In production, you should use the official AWS SDK
-	return nil, fmt.Errorf("S3 backend state fetching requires AWS SDK integration (TODO: implement with github.com/aws/aws-sdk-go-v2)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch from S3: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 403 || resp.StatusCode == 401 {
+		return nil, fmt.Errorf("S3 bucket requires authentication. This provider currently supports:\n"+
+			"  1. Public S3 buckets (no credentials needed)\n"+
+			"  2. Terraform Cloud backend (use terraform_token)\n"+
+			"\nFor private S3 buckets, please:\n"+
+			"  - Make the state file publicly readable (not recommended for production), OR\n"+
+			"  - Use Terraform Cloud backend instead, OR\n"+
+			"  - Export state locally: terraform state pull > terraform.tfstate")
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("S3 returned HTTP %d for bucket=%s, key=%s, region=%s",
+			resp.StatusCode, bucket, key, region)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read S3 response: %w", err)
+	}
+
+	return data, nil
 }
 
 // fetchAzureState retrieves state from Azure Blob Storage
@@ -215,9 +247,45 @@ func fetchAzureState(ctx context.Context, config *RemoteStateConfig) ([]byte, er
 		return nil, fmt.Errorf("Azure Storage account key not found. Set ARM_ACCESS_KEY")
 	}
 
-	// Note: This is a simplified implementation
-	// In production, you should use the official Azure SDK
-	return nil, fmt.Errorf("Azure backend state fetching requires Azure SDK integration (TODO: implement with github.com/Azure/azure-sdk-for-go)")
+	// Try fetching with anonymous/public access
+	blobURL := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", storageAccount, containerName, key)
+
+	client := retryablehttp.NewClient()
+	client.RetryMax = 3
+	client.Logger = nil
+
+	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", blobURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Azure request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch from Azure: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 403 || resp.StatusCode == 401 {
+		return nil, fmt.Errorf("Azure Storage requires authentication. This provider currently supports:\n"+
+			"  1. Public blob containers (no credentials needed)\n"+
+			"  2. Terraform Cloud backend (use terraform_token)\n"+
+			"\nFor private Azure Storage, please:\n"+
+			"  - Make the container publicly readable, OR\n"+
+			"  - Use Terraform Cloud backend instead, OR\n"+
+			"  - Export state locally: terraform state pull > terraform.tfstate")
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("Azure returned HTTP %d for storage_account=%s, container=%s, key=%s",
+			resp.StatusCode, storageAccount, containerName, key)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Azure response: %w", err)
+	}
+
+	return data, nil
 }
 
 // fetchGCSState retrieves state from Google Cloud Storage
@@ -231,21 +299,46 @@ func fetchGCSState(ctx context.Context, config *RemoteStateConfig) ([]byte, erro
 	if p, ok := config.Backend.Config["prefix"].(string); ok && p != "" {
 		prefix = p + "/default.tfstate"
 	}
-	_ = prefix // TODO: use prefix when implementing GCP SDK
 
-	// Get credentials
-	credentials := config.GCPCredentials
-	if credentials == "" {
-		credentials = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	// Try fetching with anonymous/public access
+	gcsURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucket, prefix)
+
+	client := retryablehttp.NewClient()
+	client.RetryMax = 3
+	client.Logger = nil
+
+	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", gcsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCS request: %w", err)
 	}
 
-	if credentials == "" {
-		return nil, fmt.Errorf("GCP credentials not found. Set GOOGLE_APPLICATION_CREDENTIALS")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch from GCS: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 403 || resp.StatusCode == 401 {
+		return nil, fmt.Errorf("GCS bucket requires authentication. This provider currently supports:\n"+
+			"  1. Public GCS buckets (no credentials needed)\n"+
+			"  2. Terraform Cloud backend (use terraform_token)\n"+
+			"\nFor private GCS buckets, please:\n"+
+			"  - Make the state file publicly readable, OR\n"+
+			"  - Use Terraform Cloud backend instead, OR\n"+
+			"  - Export state locally: terraform state pull > terraform.tfstate")
 	}
 
-	// Note: This is a simplified implementation
-	// In production, you should use the official GCP SDK
-	return nil, fmt.Errorf("GCS backend state fetching requires GCP SDK integration (TODO: implement with cloud.google.com/go/storage)")
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GCS returned HTTP %d for bucket=%s, prefix=%s",
+			resp.StatusCode, bucket, prefix)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read GCS response: %w", err)
+	}
+
+	return data, nil
 }
 
 // fetchHTTPState retrieves state from HTTP/HTTPS endpoint
@@ -293,7 +386,7 @@ func LoadStateFromBackend(ctx context.Context, config *RemoteStateConfig) ([]Res
 		if err != nil {
 			return nil, err
 		}
-		return ParseStateFile(statePath)
+		return ParseStateFile(ctx, statePath)
 	}
 
 	// For remote backends, fetch state and parse

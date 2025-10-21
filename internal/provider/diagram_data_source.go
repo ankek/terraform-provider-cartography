@@ -5,23 +5,26 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"github.com/ankek/terraform-provider-cartography/internal/graph"
-	"github.com/ankek/terraform-provider-cartography/internal/parser"
-	"github.com/ankek/terraform-provider-cartography/internal/renderer"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ datasource.DataSource = &DiagramDataSource{}
 
-func NewDiagramDataSource() datasource.DataSource {
-	return &DiagramDataSource{}
-}
-
 // DiagramDataSource defines the data source implementation.
 type DiagramDataSource struct {
+	generator *DiagramGenerator
+}
+
+func NewDiagramDataSource() datasource.DataSource {
+	return &DiagramDataSource{
+		generator: &DiagramGenerator{},
+	}
 }
 
 // DiagramDataSourceModel describes the data source data model.
@@ -54,22 +57,39 @@ func (d *DiagramDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 			"state_path": schema.StringAttribute{
 				MarkdownDescription: "Path to terraform.tfstate file. If not provided, will attempt to read from config_path.",
 				Optional:            true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+					stringvalidator.ConflictsWith(path.MatchRoot("config_path")),
+				},
 			},
 			"config_path": schema.StringAttribute{
 				MarkdownDescription: "Path to directory containing .tf files. Used when state_path is not available.",
 				Optional:            true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+					stringvalidator.ConflictsWith(path.MatchRoot("state_path")),
+				},
 			},
 			"output_path": schema.StringAttribute{
 				MarkdownDescription: "Path where the diagram will be saved.",
 				Required:            true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 			},
 			"format": schema.StringAttribute{
 				MarkdownDescription: "Output format: 'svg', 'png', 'jpg', or 'jpeg'. Default is 'svg'. Note: PNG and JPEG export requires resvg, inkscape, or imagemagick to be installed for high quality output.",
 				Optional:            true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("svg", "png", "jpg", "jpeg"),
+				},
 			},
 			"direction": schema.StringAttribute{
 				MarkdownDescription: "Diagram direction: 'TB' (top to bottom), 'LR' (left to right), 'BT' (bottom to top), or 'RL' (right to left). Default is 'TB'.",
 				Optional:            true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("TB", "LR", "BT", "RL"),
+				},
 			},
 			"include_labels": schema.BoolAttribute{
 				MarkdownDescription: "Include resource names and attributes as labels. Default is true.",
@@ -121,52 +141,29 @@ func (d *DiagramDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	}
 	data.IncludeLabels = types.BoolValue(includeLabels)
 
-	// Parse Terraform state or config
-	var resources []parser.Resource
-	var err error
-
-	if !data.StatePath.IsNull() && data.StatePath.ValueString() != "" {
-		resources, err = parser.ParseStateFile(data.StatePath.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to parse state file", err.Error())
-			return
-		}
-	} else if !data.ConfigPath.IsNull() && data.ConfigPath.ValueString() != "" {
-		resources, err = parser.ParseConfigDirectory(data.ConfigPath.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to parse config directory", err.Error())
-			return
-		}
-	} else {
-		resp.Diagnostics.AddError("Missing input", "Either state_path or config_path must be provided")
-		return
-	}
-
-	// Build resource graph
-	resourceGraph := graph.BuildGraph(resources)
-
-	// Set resource count
-	data.ResourceCount = types.Int64Value(int64(len(resources)))
-
-	// Render diagram
 	useIcons := false
 	if !data.UseIcons.IsNull() {
 		useIcons = data.UseIcons.ValueBool()
 	}
 
-	renderOpts := renderer.RenderOptions{
+	// Use the generator to create the diagram
+	result, err := d.generator.Generate(ctx, DiagramConfig{
+		StatePath:     data.StatePath.ValueString(),
+		ConfigPath:    data.ConfigPath.ValueString(),
+		OutputPath:    data.OutputPath.ValueString(),
 		Format:        data.Format.ValueString(),
 		Direction:     data.Direction.ValueString(),
 		IncludeLabels: data.IncludeLabels.ValueBool(),
 		Title:         data.Title.ValueString(),
 		UseIcons:      useIcons,
-	}
-
-	err = renderer.RenderDiagram(resourceGraph, data.OutputPath.ValueString(), renderOpts)
+	})
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to render diagram", err.Error())
+		resp.Diagnostics.AddError("Failed to generate diagram", err.Error())
 		return
 	}
+
+	// Set resource count from result
+	data.ResourceCount = types.Int64Value(result.ResourceCount)
 
 	// Generate ID based on content
 	hash := sha256.Sum256([]byte(fmt.Sprintf("%s_%s_%s", data.OutputPath.ValueString(), format, direction)))

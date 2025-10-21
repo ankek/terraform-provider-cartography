@@ -13,7 +13,7 @@ import (
 func LoadResources(ctx context.Context, providerConfig *CartographyProviderModel, statePath, configPath types.String) ([]parser.Resource, error) {
 	// Priority 1: If state_path is explicitly provided, use it
 	if !statePath.IsNull() && statePath.ValueString() != "" {
-		return parser.ParseStateFile(statePath.ValueString())
+		return parser.ParseStateFile(ctx, statePath.ValueString())
 	}
 
 	// Priority 2: If config_path is provided, try backend detection then HCL parsing
@@ -24,14 +24,14 @@ func LoadResources(ctx context.Context, providerConfig *CartographyProviderModel
 		backend, err := parser.ParseBackendConfig(configDir)
 		if err != nil {
 			// If backend parsing fails, fall back to HCL parsing
-			return parser.ParseConfigDirectory(configDir)
+			return parser.ParseConfigDirectory(ctx, configDir)
 		}
 
 		// Try to load from backend
 		resources, err := loadFromBackend(ctx, providerConfig, backend)
 		if err != nil {
 			// If backend loading fails, fall back to HCL parsing
-			return parser.ParseConfigDirectory(configDir)
+			return parser.ParseConfigDirectory(ctx, configDir)
 		}
 
 		return resources, nil
@@ -52,11 +52,11 @@ func LoadResources(ctx context.Context, providerConfig *CartographyProviderModel
 	// Try auto-detect state file
 	detectedStatePath, err := parser.AutoDetectStatePath(workingDir)
 	if err == nil {
-		return parser.ParseStateFile(detectedStatePath)
+		return parser.ParseStateFile(ctx, detectedStatePath)
 	}
 
 	// Last resort: parse HCL files in current directory
-	resources, err := parser.ParseConfigDirectory(workingDir)
+	resources, err := parser.ParseConfigDirectory(ctx, workingDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load resources: no state file found and HCL parsing failed: %w", err)
 	}
@@ -72,7 +72,7 @@ func loadFromBackend(ctx context.Context, providerConfig *CartographyProviderMod
 		if err != nil {
 			return nil, err
 		}
-		return parser.ParseStateFile(statePath)
+		return parser.ParseStateFile(ctx, statePath)
 	}
 
 	// For remote backends, fetch state and parse

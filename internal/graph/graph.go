@@ -1,7 +1,10 @@
+// Package graph provides functionality for building and analyzing resource dependency graphs.
+// It creates directed graphs representing relationships between Terraform resources,
+// with optimizations for efficient traversal and querying.
 package graph
 
 import (
-	"fmt"
+	"context"
 	"strings"
 
 	"github.com/ankek/terraform-provider-cartography/internal/parser"
@@ -26,10 +29,14 @@ type Edge struct {
 	Metadata     map[string]string // Additional connection info (e.g., port numbers)
 }
 
-// Graph represents the complete resource graph
+// Graph represents the complete resource graph of Terraform resources and their dependencies.
+// Nodes represent resources (VMs, networks, databases, etc.) and edges represent
+// relationships between them (depends_on, protects, routes_to, etc.).
 type Graph struct {
 	Nodes map[string]*Node
 	Edges []*Edge
+	// attributeIndex provides O(1) lookup of nodes by attribute values
+	attributeIndex map[string]map[string]*Node
 }
 
 // edgeExists checks if an edge already exists between two nodes
@@ -59,15 +66,32 @@ func (g *Graph) addEdge(from, to *Node, relationship string, metadata map[string
 	from.Edges = append(from.Edges, edge)
 }
 
-// BuildGraph creates a graph from parsed resources
-func BuildGraph(resources []parser.Resource) *Graph {
+// BuildGraph creates a resource dependency graph from parsed Terraform resources.
+// It filters out utility resources (TLS keys, local files, etc.) and builds
+// a directed graph showing infrastructure dependencies.
+//
+// The function performs these steps:
+//  1. Creates nodes for each cloud infrastructure resource
+//  2. Adds edges based on explicit Terraform dependencies
+//  3. Builds an attribute index for fast O(1) lookups
+//  4. Detects implicit connections (e.g., security group to VM attachments)
+//
+// Returns a Graph ready for visualization. Respects context for cancellation.
+func BuildGraph(ctx context.Context, resources []parser.Resource) *Graph {
 	g := &Graph{
-		Nodes: make(map[string]*Node),
-		Edges: make([]*Edge, 0),
+		Nodes:          make(map[string]*Node),
+		Edges:          make([]*Edge, 0),
+		attributeIndex: make(map[string]map[string]*Node),
 	}
 
 	// Create nodes (filter out non-infrastructure resources)
 	for _, res := range resources {
+		// Check context
+		select {
+		case <-ctx.Done():
+			return g
+		default:
+		}
 		// Skip non-cloud infrastructure resources (TLS keys, local files, etc.)
 		if !parser.ShouldIncludeInDiagram(res) {
 			continue
@@ -85,8 +109,18 @@ func BuildGraph(resources []parser.Resource) *Graph {
 		g.Nodes[res.ID] = node
 	}
 
+	// Build attribute index for O(1) lookups (optimization for detectImplicitConnections)
+	g.buildAttributeIndex()
+
 	// Create edges based on dependencies
 	for _, res := range resources {
+		// Check context
+		select {
+		case <-ctx.Done():
+			return g
+		default:
+		}
+
 		fromNode := g.Nodes[res.ID]
 		if fromNode == nil {
 			continue
@@ -106,6 +140,21 @@ func BuildGraph(resources []parser.Resource) *Graph {
 	g.detectImplicitConnections()
 
 	return g
+}
+
+// buildAttributeIndex creates an index for fast O(1) node lookups by attribute values.
+// This optimization reduces graph traversal from O(n²) to O(n) during implicit connection detection.
+func (g *Graph) buildAttributeIndex() {
+	for _, node := range g.Nodes {
+		for attrKey, attrValue := range node.Attributes {
+			if strValue, ok := attrValue.(string); ok {
+				if g.attributeIndex[attrKey] == nil {
+					g.attributeIndex[attrKey] = make(map[string]*Node)
+				}
+				g.attributeIndex[attrKey][strValue] = node
+			}
+		}
+	}
 }
 
 // inferRelationship determines the type of relationship between two resources
@@ -143,78 +192,107 @@ func inferRelationship(from, to *Node) string {
 	return "depends_on"
 }
 
-// extractConnectionMetadata extracts metadata about the connection
+// emptyMetadata is a shared empty map to avoid allocations.
+// It's returned by extractConnectionMetadata when no metadata is found,
+// reducing memory allocations in the hot path.
+var emptyMetadata = map[string]string{}
+
+// extractConnectionMetadata extracts metadata about the connection using safe attribute helpers.
+// Returns a shared empty map if no metadata is found to avoid unnecessary allocations.
 func extractConnectionMetadata(from, to *Node) map[string]string {
-	metadata := make(map[string]string)
+	var metadata map[string]string // nil initially
+
+	// ensureMetadata lazily creates the metadata map only when needed
+	ensureMetadata := func() {
+		if metadata == nil {
+			metadata = make(map[string]string)
+		}
+	}
 
 	// Extract port information from security rules
 	if from.Provider == "azure" && strings.Contains(from.Type, "security") {
-		if port, ok := from.Attributes["destination_port_range"].(string); ok {
+		if port, ok := parser.GetStringAttribute(from.Attributes, "destination_port_range"); ok {
+			ensureMetadata()
 			metadata["port"] = port
 		}
-		if protocol, ok := from.Attributes["protocol"].(string); ok {
+		if protocol, ok := parser.GetStringAttribute(from.Attributes, "protocol"); ok {
+			ensureMetadata()
 			metadata["protocol"] = protocol
 		}
 	}
 
 	if from.Provider == "aws" && from.Type == "aws_security_group_rule" {
-		if port, ok := from.Attributes["from_port"].(float64); ok {
-			metadata["port"] = fmt.Sprintf("%.0f", port)
+		if port, ok := parser.GetStringAttribute(from.Attributes, "from_port"); ok {
+			ensureMetadata()
+			metadata["port"] = port
 		}
-		if protocol, ok := from.Attributes["protocol"].(string); ok {
+		if protocol, ok := parser.GetStringAttribute(from.Attributes, "protocol"); ok {
+			ensureMetadata()
 			metadata["protocol"] = protocol
 		}
 	}
 
 	// Extract load balancer port information
 	if strings.Contains(from.Type, "lb_rule") || strings.Contains(from.Type, "lb_listener") {
-		if port, ok := from.Attributes["frontend_port"].(float64); ok {
-			metadata["frontend_port"] = fmt.Sprintf("%.0f", port)
+		if port, ok := parser.GetStringAttribute(from.Attributes, "frontend_port"); ok {
+			ensureMetadata()
+			metadata["frontend_port"] = port
 		}
-		if port, ok := from.Attributes["backend_port"].(float64); ok {
-			metadata["backend_port"] = fmt.Sprintf("%.0f", port)
+		if port, ok := parser.GetStringAttribute(from.Attributes, "backend_port"); ok {
+			ensureMetadata()
+			metadata["backend_port"] = port
 		}
-		if port, ok := from.Attributes["port"].(float64); ok {
-			metadata["port"] = fmt.Sprintf("%.0f", port)
+		if port, ok := parser.GetStringAttribute(from.Attributes, "port"); ok {
+			ensureMetadata()
+			metadata["port"] = port
 		}
 	}
 
-	// DigitalOcean: Extract firewall rule ports
+	// DigitalOcean: Extract firewall rule ports - safely handle nested structures
 	if from.Provider == "digitalocean" && from.Type == "digitalocean_firewall" {
-		// Check inbound rules
+		// Safely extract inbound rules
 		if inboundRules, ok := from.Attributes["inbound_rule"].([]interface{}); ok && len(inboundRules) > 0 {
 			if rule, ok := inboundRules[0].(map[string]interface{}); ok {
-				if ports, ok := rule["port_range"].(string); ok {
+				if ports, ok := parser.GetStringAttribute(rule, "port_range"); ok {
+					ensureMetadata()
 					metadata["port"] = ports
 				}
-				if protocol, ok := rule["protocol"].(string); ok {
+				if protocol, ok := parser.GetStringAttribute(rule, "protocol"); ok {
+					ensureMetadata()
 					metadata["protocol"] = protocol
 				}
 			}
 		}
 	}
 
-	// DigitalOcean: Extract load balancer forwarding rules
+	// DigitalOcean: Extract load balancer forwarding rules - safely
 	if from.Provider == "digitalocean" && from.Type == "digitalocean_loadbalancer" {
 		if forwardingRules, ok := from.Attributes["forwarding_rule"].([]interface{}); ok && len(forwardingRules) > 0 {
 			if rule, ok := forwardingRules[0].(map[string]interface{}); ok {
-				if port, ok := rule["entry_port"].(float64); ok {
-					metadata["frontend_port"] = fmt.Sprintf("%.0f", port)
+				if port, ok := parser.GetStringAttribute(rule, "entry_port"); ok {
+					ensureMetadata()
+					metadata["frontend_port"] = port
 				}
-				if port, ok := rule["target_port"].(float64); ok {
-					metadata["backend_port"] = fmt.Sprintf("%.0f", port)
+				if port, ok := parser.GetStringAttribute(rule, "target_port"); ok {
+					ensureMetadata()
+					metadata["backend_port"] = port
 				}
-				if protocol, ok := rule["entry_protocol"].(string); ok {
+				if protocol, ok := parser.GetStringAttribute(rule, "entry_protocol"); ok {
+					ensureMetadata()
 					metadata["protocol"] = protocol
 				}
 			}
 		}
 	}
 
+	if metadata == nil {
+		return emptyMetadata
+	}
 	return metadata
 }
 
-// detectImplicitConnections finds connections not explicitly in dependencies
+// detectImplicitConnections finds connections not explicitly in dependencies.
+// Uses the attribute index for O(1) lookups instead of O(n) scans.
 func (g *Graph) detectImplicitConnections() {
 	// Azure: NSG to subnet associations
 	for _, node := range g.Nodes {
@@ -223,11 +301,11 @@ func (g *Graph) detectImplicitConnections() {
 			subnetID := getAttributeString(node.Attributes, "subnet_id")
 			nsgID := getAttributeString(node.Attributes, "network_security_group_id")
 
-			subnetNode := findNodeByAttributeValue(g.Nodes, "id", subnetID)
-			nsgNode := findNodeByAttributeValue(g.Nodes, "id", nsgID)
+			subnetNode := g.findNodeByAttributeValue("id", subnetID)
+			nsgNode := g.findNodeByAttributeValue("id", nsgID)
 
 			if subnetNode != nil && nsgNode != nil {
-				g.addEdge(nsgNode, subnetNode, "protects", make(map[string]string))
+				g.addEdge(nsgNode, subnetNode, "protects", emptyMetadata)
 			}
 		}
 
@@ -236,9 +314,9 @@ func (g *Graph) detectImplicitConnections() {
 			if sgIDs, ok := node.Attributes["vpc_security_group_ids"].([]interface{}); ok {
 				for _, sgID := range sgIDs {
 					if sgIDStr, ok := sgID.(string); ok {
-						sgNode := findNodeByAttributeValue(g.Nodes, "id", sgIDStr)
+						sgNode := g.findNodeByAttributeValue("id", sgIDStr)
 						if sgNode != nil {
-							g.addEdge(sgNode, node, "protects", make(map[string]string))
+							g.addEdge(sgNode, node, "protects", emptyMetadata)
 						}
 					}
 				}
@@ -255,7 +333,7 @@ func (g *Graph) detectImplicitConnections() {
 						if dropletIDs, ok := fwNode.Attributes["droplet_ids"].([]interface{}); ok {
 							for _, id := range dropletIDs {
 								if idStr, ok := id.(string); ok && idStr == dropletID {
-									g.addEdge(fwNode, node, "protects", make(map[string]string))
+									g.addEdge(fwNode, node, "protects", emptyMetadata)
 								}
 							}
 						}
@@ -269,9 +347,9 @@ func (g *Graph) detectImplicitConnections() {
 			if dropletIDs, ok := node.Attributes["droplet_ids"].([]interface{}); ok {
 				for _, id := range dropletIDs {
 					if idStr, ok := id.(string); ok {
-						dropletNode := findNodeByAttributeValue(g.Nodes, "id", idStr)
+						dropletNode := g.findNodeByAttributeValue("id", idStr)
 						if dropletNode != nil {
-							g.addEdge(node, dropletNode, "routes_to", make(map[string]string))
+							g.addEdge(node, dropletNode, "routes_to", emptyMetadata)
 						}
 					}
 				}
@@ -290,8 +368,18 @@ func getAttributeString(attrs map[string]interface{}, key string) string {
 	return ""
 }
 
-func findNodeByAttributeValue(nodes map[string]*Node, attrKey, attrValue string) *Node {
-	for _, node := range nodes {
+// findNodeByAttributeValue looks up a node by attribute value using the O(1) index.
+// Falls back to O(n) scan if attribute is not indexed.
+func (g *Graph) findNodeByAttributeValue(attrKey, attrValue string) *Node {
+	// Try index lookup first (O(1))
+	if index, ok := g.attributeIndex[attrKey]; ok {
+		if node, found := index[attrValue]; found {
+			return node
+		}
+	}
+
+	// Fallback to linear scan for non-indexed attributes
+	for _, node := range g.Nodes {
 		if val := getAttributeString(node.Attributes, attrKey); val == attrValue {
 			return node
 		}
