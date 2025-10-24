@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	fmt.Println("Testing icon rendering with temporary files...\n")
+	fmt.Println("Testing icon rendering with temporary files...")
 
 	// Create test graph with DigitalOcean resources
 	g := &graph.Graph{
@@ -24,7 +24,7 @@ func main() {
 		Type:     "digitalocean_droplet",
 		Provider: "digitalocean",
 		ResourceType: parser.ResourceTypeCompute,
-		Attributes: map[string]interface{}{
+		Attributes: map[string]any{
 			"region": "ams3",
 		},
 	}
@@ -37,7 +37,7 @@ func main() {
 		Type:     "digitalocean_firewall",
 		Provider: "digitalocean",
 		ResourceType: parser.ResourceTypeSecurity,
-		Attributes: map[string]interface{}{},
+		Attributes: map[string]any{},
 	}
 	g.Nodes[firewall.ID] = firewall
 
@@ -48,7 +48,7 @@ func main() {
 		Type:     "digitalocean_ssh_key",
 		Provider: "digitalocean",
 		ResourceType: parser.ResourceTypeSecret,
-		Attributes: map[string]interface{}{},
+		Attributes: map[string]any{},
 	}
 	g.Nodes[sshkey.ID] = sshkey
 
@@ -59,7 +59,7 @@ func main() {
 		Type:     "digitalocean_monitor_alert",
 		Provider: "digitalocean",
 		ResourceType: parser.ResourceTypeSecret,
-		Attributes: map[string]interface{}{},
+		Attributes: map[string]any{},
 	}
 	g.Nodes[alert.ID] = alert
 
