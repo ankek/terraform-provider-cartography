@@ -77,7 +77,7 @@ diagrams/
 .DS_Store
 Thumbs.db
 
-# Documentation
-docs/
+# # Documentation
+# docs/
 # Added by goreleaser init:
 dist/
