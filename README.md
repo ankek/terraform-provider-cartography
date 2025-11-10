@@ -109,37 +109,159 @@ The provider recognizes and visualizes resources from:
 
 ## Remote State Backends
 
-The provider can read state from remote backends by configuring the appropriate credentials:
+The provider automatically detects your Terraform backend configuration and fetches state from remote storage. It supports all major backends with full authentication.
+
+### Supported Backends
+
+ ✅ Fully Supported with Automatic Credential Detection
+
+  | Backend                  | Status         | Authentication Method                     | Credentials Auto-Detection                 |
+  |--------------------------|----------------|-------------------------------------------|--------------------------------------------|
+  | local                    | ✅ Full Support | File system access                        | N/A (no credentials needed)               |
+  | s3 (AWS)                 | ✅ Full Support | AWS SDK v2 with complete credential chain | ✅ Yes - reads from backend  config       |
+  | azurerm (Azure)          | ✅ Full Support | Azure SDK with shared key                 | ✅ Yes - reads from backend  config       |
+  | remote (Terraform Cloud) | ✅ Full Support | API token authentication                  | ⚠️ Via environment variables  (TFE_TOKEN) |
+  | http/https               | ✅ Full Support | Basic authentication                      | ✅ Yes - reads from backend  config       |
+
+  ⚠️ Limited Support
+
+  | Backend            | Status     | Limitation          | Authentication          |
+  |--------------------|------------|---------------------|-------------------------|
+  | gcs (Google Cloud) | ⚠️ Limited | Public buckets only | HTTP-based (no GCS SDK) |
+
+  ❌ Not Implemented
+
+  | Backend         | Status          | Reason                              |
+  |-----------------|-----------------|-------------------------------------|
+  | consul          | ❌ Not Supported | No Consul client implementation     |
+  | etcdv3          | ❌ Not Supported | No etcd v3 client implementation    |
+  | pg (PostgreSQL) | ❌ Not Supported | No PostgreSQL client implementation |
 
 ### AWS S3 Backend
+
+The provider automatically reads credentials from your backend configuration:
+
 ```hcl
-provider "cartography" {
-  aws_access_key = var.aws_access_key  # Or use AWS_ACCESS_KEY_ID env var
-  aws_secret_key = var.aws_secret_key  # Or use AWS_SECRET_ACCESS_KEY env var
+terraform {
+  backend "s3" {
+    bucket = "my-terraform-state"
+    key    = "prod/terraform.tfstate"
+    region = "us-east-1"
+
+    # Credentials specified here are automatically used!
+    # Option 1: Direct credentials
+    # access_key = "AKIAIOSFODNN7EXAMPLE"
+    # secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+    # Option 2: AWS profile
+    # profile = "production"
+
+    # Option 3: Environment variables or IAM role
+  }
+}
+
+# Simple provider config - no credential duplication!
+provider "cartography" {}
+
+data "cartography_diagram" "infra" {
+  config_path = path.module  # Auto-detects S3 backend
+  output_path = "diagram.svg"
 }
 ```
 
-### Azure Blob Storage
+**Credential Auto-Detection Priority:**
+1. Backend config (`access_key`/`secret_key` or `profile` in backend block)
+2. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+3. Shared credentials file (`~/.aws/credentials`)
+4. IAM role (EC2, ECS, Lambda)
+
+### Azure Blob Storage Backend
+
+The provider automatically reads credentials from your backend configuration:
+
 ```hcl
-provider "cartography" {
-  azure_account = "mystorageaccount"
-  azure_key     = var.azure_key  # Or use ARM_ACCESS_KEY env var
+terraform {
+  backend "azurerm" {
+    storage_account_name = "tfstate12345"
+    container_name       = "tfstate"
+    key                  = "prod.terraform.tfstate"
+
+    # Credentials specified here are automatically used!
+    # Option 1: Direct access key
+    # access_key = "your-storage-account-key"
+
+    # Option 2: Environment variables
+    # ARM_ACCESS_KEY or AZURE_STORAGE_KEY
+  }
+}
+
+# Simple provider config - no credential duplication!
+provider "cartography" {}
+
+data "cartography_diagram" "infra" {
+  config_path = path.module  # Auto-detects Azure backend
+  output_path = "diagram.svg"
 }
 ```
 
-### Google Cloud Storage
-```hcl
-provider "cartography" {
-  gcp_credentials = file("~/.gcp/credentials.json")  # Or use GOOGLE_APPLICATION_CREDENTIALS env var
-}
-```
+**Credential Auto-Detection Priority:**
+1. Backend config (`access_key` in backend block)
+2. Environment variable `ARM_ACCESS_KEY`
+3. Environment variable `AZURE_STORAGE_KEY`
 
-### Terraform Cloud
+### Terraform Cloud/Enterprise Backend
+
 ```hcl
+terraform {
+  backend "remote" {
+    organization = "my-org"
+    workspaces {
+      name = "production"
+    }
+  }
+}
+
 provider "cartography" {
   terraform_token = var.tfe_token  # Or use TFE_TOKEN env var
 }
+
+data "cartography_diagram" "infra" {
+  config_path = path.module  # Auto-detects TFC backend
+  output_path = "diagram.svg"
+}
 ```
+
+### Backend Auto-Detection
+
+When you use `config_path` instead of `state_path`, the provider:
+1. **Parses your Terraform configuration files** to find the backend configuration
+2. **Extracts credentials** directly from the backend block (access_key, profile, etc.)
+3. **Falls back to environment variables** if not specified in backend config
+4. **Fetches state** using the detected credentials
+5. **Generates your diagram** automatically
+
+**Key Benefit:** No need to duplicate credentials! Just configure your backend once, and the provider reads everything from there.
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket     = "my-state-bucket"
+    key        = "terraform.tfstate"
+    region     = "us-east-1"
+    access_key = "..." # Provider reads this automatically!
+    secret_key = "..." # Provider reads this automatically!
+  }
+}
+
+provider "cartography" {} # That's it!
+
+data "cartography_diagram" "infra" {
+  config_path = path.module
+  output_path = "diagram.svg"
+}
+```
+
+See [examples/backend-configurations](./examples/backend-configurations) for complete examples of all supported backends.
 
 ## Building from Source
 

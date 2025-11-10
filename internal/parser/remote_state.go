@@ -3,25 +3,52 @@ package parser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/hashicorp/go-retryablehttp"
 )
 
 // RemoteStateConfig holds configuration for fetching remote state
 type RemoteStateConfig struct {
 	Backend *BackendConfig
-	// Authentication credentials
+	// Authentication credentials (optional overrides - backend config takes priority)
 	TerraformToken string // For Terraform Cloud/Enterprise
 	AWSAccessKey   string // For S3
 	AWSSecretKey   string
-	AzureAccount   string // For Azure Storage
-	AzureKey       string
-	GCPCredentials string // For GCS (JSON key)
+	AWSSessionToken string // Optional session token for temporary credentials
+	AWSProfile      string // AWS profile name
+	AzureAccount    string // For Azure Storage
+	AzureKey        string
+	GCPCredentials  string // For GCS (JSON key)
+}
+
+// getCredentialFromBackendOrEnv gets a credential from backend config, then env var, then fallback
+func getCredentialFromBackendOrEnv(backend *BackendConfig, configKey string, envVars []string, fallback string) string {
+	// Priority 1: Check backend configuration
+	if val, ok := backend.Config[configKey].(string); ok && val != "" {
+		return val
+	}
+
+	// Priority 2: Check environment variables
+	for _, envVar := range envVars {
+		if val := os.Getenv(envVar); val != "" {
+			return val
+		}
+	}
+
+	// Priority 3: Use fallback value
+	return fallback
 }
 
 // FetchRemoteState retrieves state from a remote backend
@@ -150,139 +177,188 @@ func fetchTerraformCloudState(ctx context.Context, config *RemoteStateConfig) ([
 	return io.ReadAll(resp.Body)
 }
 
-// fetchS3State retrieves state from AWS S3
-func fetchS3State(ctx context.Context, config *RemoteStateConfig) ([]byte, error) {
-	bucket, ok := config.Backend.Config["bucket"].(string)
+// fetchS3State retrieves state from AWS S3 using AWS SDK v2
+func fetchS3State(ctx context.Context, remoteConfig *RemoteStateConfig) ([]byte, error) {
+	backend := remoteConfig.Backend
+
+	bucket, ok := backend.Config["bucket"].(string)
 	if !ok || bucket == "" {
 		return nil, fmt.Errorf("bucket not specified in S3 backend configuration")
 	}
 
-	key, ok := config.Backend.Config["key"].(string)
+	key, ok := backend.Config["key"].(string)
 	if !ok || key == "" {
 		return nil, fmt.Errorf("key not specified in S3 backend configuration")
 	}
 
-	// Get AWS region
-	region := "us-east-1"
-	if r, ok := config.Backend.Config["region"].(string); ok && r != "" {
-		region = r
+	// Get AWS region from backend config or environment
+	region := getCredentialFromBackendOrEnv(backend, "region",
+		[]string{"AWS_DEFAULT_REGION", "AWS_REGION"}, "us-east-1")
+
+	// Get AWS credentials with priority: backend config -> provider config -> environment
+	var accessKey, secretKey, sessionToken, profile string
+
+	// Check backend configuration first
+	accessKey = getCredentialFromBackendOrEnv(backend, "access_key",
+		[]string{"AWS_ACCESS_KEY_ID"}, "")
+	secretKey = getCredentialFromBackendOrEnv(backend, "secret_key",
+		[]string{"AWS_SECRET_ACCESS_KEY"}, "")
+	sessionToken = getCredentialFromBackendOrEnv(backend, "token",
+		[]string{"AWS_SESSION_TOKEN"}, "")
+	profile = getCredentialFromBackendOrEnv(backend, "profile",
+		[]string{"AWS_PROFILE"}, "")
+
+	// Override with provider config if provided (but backend config takes priority)
+	if accessKey == "" && remoteConfig.AWSAccessKey != "" {
+		accessKey = remoteConfig.AWSAccessKey
 	}
-	_ = region // TODO: use region when implementing AWS SDK
-
-	// Get credentials - prefer config, fall back to environment
-	accessKey := config.AWSAccessKey
-	secretKey := config.AWSSecretKey
-	if accessKey == "" {
-		accessKey = os.Getenv("AWS_ACCESS_KEY_ID")
+	if secretKey == "" && remoteConfig.AWSSecretKey != "" {
+		secretKey = remoteConfig.AWSSecretKey
 	}
-	if secretKey == "" {
-		secretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if sessionToken == "" && remoteConfig.AWSSessionToken != "" {
+		sessionToken = remoteConfig.AWSSessionToken
+	}
+	if profile == "" && remoteConfig.AWSProfile != "" {
+		profile = remoteConfig.AWSProfile
 	}
 
-	// Try fetching with anonymous access (for public buckets)
-	s3URL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucket, region, key)
+	// Build AWS config with proper credential chain
+	var cfg aws.Config
+	var err error
 
-	client := retryablehttp.NewClient()
-	client.RetryMax = 3
-	client.Logger = nil
+	// Priority 1: Use explicit credentials if provided
+	if accessKey != "" && secretKey != "" {
+		cfg, err = config.LoadDefaultConfig(ctx,
+			config.WithRegion(region),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+				accessKey,
+				secretKey,
+				sessionToken,
+			)),
+		)
+	} else if profile != "" {
+		// Priority 2: Use AWS profile
+		cfg, err = config.LoadDefaultConfig(ctx,
+			config.WithRegion(region),
+			config.WithSharedConfigProfile(profile),
+		)
+	} else {
+		// Priority 3: Use default credential chain (env vars, shared config, IAM role, etc.)
+		cfg, err = config.LoadDefaultConfig(ctx,
+			config.WithRegion(region),
+		)
+	}
 
-	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", s3URL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create S3 request: %w", err)
+		return nil, fmt.Errorf("failed to load AWS configuration: %w", err)
 	}
 
-	resp, err := client.Do(req)
+	// Create S3 client
+	client := s3.NewFromConfig(cfg)
+
+	// Get the object from S3
+	result, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch from S3: %w", err)
+		return nil, fmt.Errorf("failed to fetch state from S3 (bucket=%s, key=%s, region=%s): %w\n"+
+			"Hint: Ensure AWS credentials are configured via:\n"+
+			"  1. Provider config (aws_access_key, aws_secret_key)\n"+
+			"  2. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)\n"+
+			"  3. AWS shared credentials file (~/.aws/credentials)\n"+
+			"  4. IAM role (if running on EC2, ECS, Lambda, etc.)",
+			bucket, key, region, err)
 	}
-	defer resp.Body.Close()
+	defer result.Body.Close()
 
-	if resp.StatusCode == 403 || resp.StatusCode == 401 {
-		return nil, fmt.Errorf("S3 bucket requires authentication. This provider currently supports:\n"+
-			"  1. Public S3 buckets (no credentials needed)\n"+
-			"  2. Terraform Cloud backend (use terraform_token)\n"+
-			"\nFor private S3 buckets, please:\n"+
-			"  - Make the state file publicly readable (not recommended for production), OR\n"+
-			"  - Use Terraform Cloud backend instead, OR\n"+
-			"  - Export state locally: terraform state pull > terraform.tfstate")
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("S3 returned HTTP %d for bucket=%s, key=%s, region=%s",
-			resp.StatusCode, bucket, key, region)
-	}
-
-	data, err := io.ReadAll(resp.Body)
+	// Read the state data
+	data, err := io.ReadAll(result.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read S3 response: %w", err)
+		return nil, fmt.Errorf("failed to read S3 state data: %w", err)
 	}
 
 	return data, nil
 }
 
-// fetchAzureState retrieves state from Azure Blob Storage
-func fetchAzureState(ctx context.Context, config *RemoteStateConfig) ([]byte, error) {
-	storageAccount, ok := config.Backend.Config["storage_account_name"].(string)
+// fetchAzureState retrieves state from Azure Blob Storage using Azure SDK
+func fetchAzureState(ctx context.Context, remoteConfig *RemoteStateConfig) ([]byte, error) {
+	backend := remoteConfig.Backend
+
+	storageAccount, ok := backend.Config["storage_account_name"].(string)
 	if !ok || storageAccount == "" {
 		return nil, fmt.Errorf("storage_account_name not specified in azurerm backend configuration")
 	}
 
-	containerName, ok := config.Backend.Config["container_name"].(string)
+	containerName, ok := backend.Config["container_name"].(string)
 	if !ok || containerName == "" {
 		return nil, fmt.Errorf("container_name not specified in azurerm backend configuration")
 	}
 
-	key, ok := config.Backend.Config["key"].(string)
+	key, ok := backend.Config["key"].(string)
 	if !ok || key == "" {
 		return nil, fmt.Errorf("key not specified in azurerm backend configuration")
 	}
 
-	// Get credentials
-	accountKey := config.AzureKey
-	if accountKey == "" {
-		accountKey = os.Getenv("ARM_ACCESS_KEY")
+	// Get credentials with priority: backend config -> provider config -> environment
+	accountKey := getCredentialFromBackendOrEnv(backend, "access_key",
+		[]string{"ARM_ACCESS_KEY", "AZURE_STORAGE_KEY"}, "")
+
+	// Override with provider config if provided (but backend config takes priority)
+	if accountKey == "" && remoteConfig.AzureKey != "" {
+		accountKey = remoteConfig.AzureKey
 	}
 
 	if accountKey == "" {
-		return nil, fmt.Errorf("Azure Storage account key not found. Set ARM_ACCESS_KEY")
+		return nil, fmt.Errorf("Azure Storage account key not found. Set one of:\n"+
+			"  1. Backend config: access_key in azurerm backend block\n"+
+			"  2. Environment variable: ARM_ACCESS_KEY\n"+
+			"  3. Environment variable: AZURE_STORAGE_KEY\n"+
+			"  4. Provider config: azure_key (optional)")
 	}
 
-	// Try fetching with anonymous/public access
-	blobURL := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", storageAccount, containerName, key)
-
-	client := retryablehttp.NewClient()
-	client.RetryMax = 3
-	client.Logger = nil
-
-	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", blobURL, nil)
+	// Create credential from account key
+	credential, err := azblob.NewSharedKeyCredential(storageAccount, accountKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Azure request: %w", err)
+		return nil, fmt.Errorf("failed to create Azure credentials: %w", err)
 	}
 
-	resp, err := client.Do(req)
+	// Create blob client
+	client, err := azblob.NewClientWithSharedKeyCredential(
+		fmt.Sprintf("https://%s.blob.core.windows.net/", storageAccount),
+		credential,
+		nil,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch from Azure: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 403 || resp.StatusCode == 401 {
-		return nil, fmt.Errorf("Azure Storage requires authentication. This provider currently supports:\n"+
-			"  1. Public blob containers (no credentials needed)\n"+
-			"  2. Terraform Cloud backend (use terraform_token)\n"+
-			"\nFor private Azure Storage, please:\n"+
-			"  - Make the container publicly readable, OR\n"+
-			"  - Use Terraform Cloud backend instead, OR\n"+
-			"  - Export state locally: terraform state pull > terraform.tfstate")
+		return nil, fmt.Errorf("failed to create Azure blob client: %w", err)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Azure returned HTTP %d for storage_account=%s, container=%s, key=%s",
-			resp.StatusCode, storageAccount, containerName, key)
-	}
-
-	data, err := io.ReadAll(resp.Body)
+	// Download the blob
+	downloadResponse, err := client.DownloadStream(ctx, containerName, key, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read Azure response: %w", err)
+		var respErr *azcore.ResponseError
+		if ok := errors.As(err, &respErr); ok {
+			if respErr.StatusCode == 404 {
+				return nil, fmt.Errorf("state file not found in Azure Storage (account=%s, container=%s, key=%s)",
+					storageAccount, containerName, key)
+			}
+			if respErr.StatusCode == 403 {
+				return nil, fmt.Errorf("access denied to Azure Storage. Verify:\n"+
+					"  - Storage account name is correct\n"+
+					"  - Account key is valid\n"+
+					"  - Container exists and is accessible\n"+
+					"  (account=%s, container=%s, key=%s)",
+					storageAccount, containerName, key)
+			}
+		}
+		return nil, fmt.Errorf("failed to download from Azure Storage: %w", err)
+	}
+	defer downloadResponse.Body.Close()
+
+	// Read the state data
+	data, err := io.ReadAll(downloadResponse.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Azure blob data: %w", err)
 	}
 
 	return data, nil
