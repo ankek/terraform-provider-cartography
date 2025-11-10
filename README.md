@@ -31,16 +31,13 @@ terraform {
   required_providers {
     cartography = {
       source  = "ankek/cartography"
-      version = "~> 0.1"
+      version = "~> 0.0.1"
     }
   }
 }
 
 provider "cartography" {
-  # Optional: Configure remote state backend access
-  # aws_access_key = "..."  # Or set AWS_ACCESS_KEY_ID
-  # azure_account  = "..."
-  # gcp_credentials = file("credentials.json")
+  # Terraform Backend Auto-Detection
 }
 
 # Generate a diagram from your infrastructure
