@@ -139,6 +139,11 @@ func TestValidateOutputPath_Permissions(t *testing.T) {
 		t.Skip("Skipping permission test when running as root")
 	}
 
+	// Skip on Windows - permissions work differently
+	if os.PathSeparator == '\\' {
+		t.Skip("Skipping permission test on Windows")
+	}
+
 	// Create a read-only directory
 	tmpDir := t.TempDir()
 	readOnlyDir := filepath.Join(tmpDir, "readonly")
